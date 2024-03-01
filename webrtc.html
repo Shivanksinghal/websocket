@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC Example</title>
+</head>
+<body>
+  <h1>WebRTC Example</h1>
+  <video id="localVideo" autoplay muted></video>
+  <video id="remoteVideo" autoplay></video>
+  <br>
+  <button id="startButton">Start Call</button>
+  <button id="hangupButton">Hang Up</button>
+
+  <script>
+    let localStream;
+    let pc;
+    const ws = new WebSocket('ws://' + window.location.hostname + '/signaling');
+
+    // Event listener for WebSocket messages
+    ws.onmessage = function(event) {
+      const message = JSON.parse(event.data);
+      if (message.sdp) {
+        handleSDPMessage(message);
+      } else if (message.candidate) {
+        handleICECandidateMessage(message);
+      }
+    };
+
+    async function startCall() {
+      try {
+        // Get local media stream
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        document.getElementById('localVideo').srcObject = localStream;
+
+        // Create peer connection
+        pc = new RTCPeerConnection();
+
+        // Add local stream to peer connection
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        // Set up event handlers for ICE candidates and incoming media streams
+        pc.onicecandidate = event => {
+          if (event.candidate) {
+            // Send ICE candidate to the other peer
+            ws.send(JSON.stringify({ candidate: event.candidate }));
+          }
+        };
+
+        pc.ontrack = event => {
+          document.getElementById('remoteVideo').srcObject = event.streams[0];
+        };
+
+        // Create offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Send offer to the other peer
+        ws.send(JSON.stringify({ sdp: pc.localDescription }));
+      } catch (error) {
+        console.error('Error starting call:', error);
+      }
+    }
+
+    function handleSDPMessage(message) {
+      const desc = new RTCSessionDescription(message.sdp);
+      pc.setRemoteDescription(desc)
+        .then(() => {
+          if (desc.type === 'offer') {
+            return pc.createAnswer();
+          }
+        })
+        .then(answer => {
+          return pc.setLocalDescription(answer);
+        })
+        .then(() => {
+          // Send answer to the other peer
+          ws.send(JSON.stringify({ sdp: pc.localDescription }));
+        })
+        .catch(error => {
+          console.error('Error handling SDP message:', error);
+        });
+    }
+
+    function handleICECandidateMessage(message) {
+      const candidate = new RTCIceCandidate(message.candidate);
+      pc.addIceCandidate(candidate)
+        .catch(error => {
+          console.error('Error handling ICE candidate message:', error);
+        });
+    }
+
+    function hangUp() {
+      pc.close();
+      localStream.getTracks().forEach(track => track.stop());
+      document.getElementById('localVideo').srcObject = null;
+      document.getElementById('remoteVideo').srcObject = null;
+    }
+
+    // Attach event listeners to buttons
+    document.getElementById('startButton').addEventListener('click', startCall);
+    document.getElementById('hangupButton').addEventListener('click', hangUp);
+  </script>
+</body>
+</html>
